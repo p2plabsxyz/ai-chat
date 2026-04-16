@@ -68,6 +68,12 @@
         overflow: hidden; white-space: nowrap; text-overflow: ellipsis;
       }
       .history-item.pinned .history-item-title::before { content: '\1F4CC\00A0'; font-size: 10px; }
+      .history-item.generating .history-item-title::after {
+        content: ''; display: inline-block; width: 6px; height: 6px;
+        background: var(--accent); border-radius: 50%; margin-left: 6px;
+        vertical-align: middle; animation: gen-pulse 1s ease-in-out infinite;
+      }
+      @keyframes gen-pulse { 0%,100% { opacity: 1; } 50% { opacity: 0.25; } }
       .history-item-meta { font-size: 0.7rem; color: var(--muted); margin-top: 2px; }
       .history-item-dots {
         all: unset; cursor: pointer;
