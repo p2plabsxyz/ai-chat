@@ -12,13 +12,15 @@ const LS_PINS   = 'ai-chat-pinned';
 const LS_DRAFT  = 'ai-chat-draft';
 const LS_TITLES = 'ai-chat-titles';
 
-let currentSessionId  = null;
-let memoryEnabled     = false;
-let visionSupported   = false;
-let pendingImage      = null;
-let isBusy            = false;
-let abortController   = null;
-let ctxTargetSession  = null;
+let currentSessionId     = null;
+let memoryEnabled        = false;
+let visionSupported      = false;
+let pendingImage         = null;
+let isBusy               = false;
+let abortController      = null;
+let ctxTargetSession     = null;
+let activeInferSessionId = null;
+let activeInferMsgEl     = null;
 
 const messagesEl    = document.getElementById('messages');
 const promptBox     = document.getElementById('promptBox');
@@ -218,6 +220,9 @@ async function loadSession(sessionId) {
     messagesEl.innerHTML = '';
     showWelcome(false);
     for (const m of lsSaved) addMessage(m.role, m.content, false);
+    if (isBusy && activeInferSessionId === sessionId && activeInferMsgEl) {
+      messagesEl.appendChild(activeInferMsgEl);
+    }
     highlightActiveSession(sessionId);
     messagesEl.scrollTop = messagesEl.scrollHeight;
     return;
@@ -226,12 +231,26 @@ async function loadSession(sessionId) {
   let entries;
   try { entries = await window.llmMemory.list({ sessionId }); }
   catch { return; }
-  if (!entries?.length) return;
+  if (!entries?.length) {
+    if (isBusy && activeInferSessionId === sessionId && activeInferMsgEl) {
+      currentSessionId = sessionId;
+      try { localStorage.setItem(LS_SID, sessionId); } catch {}
+      messagesEl.innerHTML = '';
+      showWelcome(false);
+      messagesEl.appendChild(activeInferMsgEl);
+      highlightActiveSession(sessionId);
+      messagesEl.scrollTop = messagesEl.scrollHeight;
+    }
+    return;
+  }
   currentSessionId = sessionId;
   try { localStorage.setItem(LS_SID, sessionId); } catch {}
   messagesEl.innerHTML = '';
   showWelcome(false);
   for (const e of entries) { if (e.role !== 'system') addMessage(e.role, e.content, false); }
+  if (isBusy && activeInferSessionId === sessionId && activeInferMsgEl) {
+    messagesEl.appendChild(activeInferMsgEl);
+  }
   highlightActiveSession(sessionId);
   messagesEl.scrollTop = messagesEl.scrollHeight;
   saveMsgsToLS();
@@ -313,6 +332,17 @@ document.getElementById('delete-confirm').addEventListener('click', async () => 
 });
 
 newChatBtn.addEventListener('click', () => { startNewSession(); loadSidebar(); });
+
+document.addEventListener('visibilitychange', () => {
+  if (document.visibilityState === 'visible') {
+    if (!localStorage.getItem(LS_SID) && messagesEl.querySelectorAll('.message').length) {
+      startNewSession();
+      loadSidebar();
+    }
+  }
+});
+
+window.addEventListener('focus', () => detectVision());
 
 sendBtn.addEventListener('click', () => {
   if (isBusy) { abortController?.abort(); } else { send(); }
@@ -625,6 +655,7 @@ async function buildMemoryContext() {
 
 async function runInference() {
   if (!window.llm) return;
+  activeInferSessionId = currentSessionId;
   setBusy(true);
   abortController = new AbortController();
 
@@ -632,12 +663,13 @@ async function runInference() {
   const memCtx  = await buildMemoryContext();
   const msgs    = [{ role: 'system', content: SYSTEM_PROMPT + memCtx }, ...history];
 
-  const msgEl  = addMessage('assistant', '', false);
-  const bubble = msgEl.querySelector('.msg-bubble');
+  activeInferMsgEl = addMessage('assistant', '', false);
+  const bubble = activeInferMsgEl.querySelector('.msg-bubble');
   const thinking = document.createElement('span');
   thinking.className = 'msg-thinking';
   thinking.textContent = 'Thinking\u2026';
   bubble.appendChild(thinking);
+  setInferBadge(activeInferSessionId, true);
   messagesEl.scrollTop = messagesEl.scrollHeight;
 
   let assistantContent = '';
@@ -646,9 +678,9 @@ async function runInference() {
       if (abortController.signal.aborted) break;
       assistantContent += chunk?.content || '';
       bubble.textContent = assistantContent;
-      messagesEl.scrollTop = messagesEl.scrollHeight;
+      if (activeInferSessionId === currentSessionId) messagesEl.scrollTop = messagesEl.scrollHeight;
     }
-    if (assistantContent) await saveToMemory('assistant', assistantContent);
+    if (assistantContent) await saveToMemory('assistant', assistantContent, activeInferSessionId);
   } catch (err) {
     bubble.textContent = abortController.signal.aborted
       ? (assistantContent || '\u2715 Cancelled')
@@ -656,14 +688,31 @@ async function runInference() {
   } finally {
     setBusy(false);
     abortController = null;
-    saveMsgsToLS();
+    setInferBadge(activeInferSessionId, false);
+    if (activeInferSessionId === currentSessionId) {
+      saveMsgsToLS();
+    } else {
+      try {
+        const existing = JSON.parse(localStorage.getItem(`${LS_MSGS}-${activeInferSessionId}`) || '[]');
+        const finalContent = assistantContent || bubble.textContent;
+        if (finalContent) existing.push({ role: 'assistant', content: finalContent });
+        localStorage.setItem(`${LS_MSGS}-${activeInferSessionId}`, JSON.stringify(existing));
+      } catch {}
+    }
+    activeInferSessionId = null;
+    activeInferMsgEl = null;
   }
 }
 
-async function saveToMemory(role, content) {
+function setInferBadge(sessionId, on) {
+  const item = historyList.querySelector(`.history-item[data-session-id="${sessionId}"]`);
+  if (item) item.classList.toggle('generating', on);
+}
+
+async function saveToMemory(role, content, sessionId = currentSessionId) {
   if (!memoryEnabled || !window.llmMemory) return;
   try {
-    await window.llmMemory.add({ appId: APP_ID, sessionId: currentSessionId, role, content, model: '', ts: new Date().toISOString() });
+    await window.llmMemory.add({ appId: APP_ID, sessionId, role, content, model: '', ts: new Date().toISOString() });
   } catch {}
 }
 
