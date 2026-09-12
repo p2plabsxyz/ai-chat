@@ -17,6 +17,7 @@ let memoryEnabled        = false;
 let visionSupported      = false;
 let pendingImage         = null;
 let isBusy               = false;
+let refocusPrompt        = false;
 let abortController      = null;
 let ctxTargetSession     = null;
 let activeInferSessionId = null;
@@ -629,7 +630,22 @@ function setBusy(busy) {
   isBusy = busy;
   sendBtn.classList.toggle('busy', busy);
   sendIcon.src = busy ? './assets/svg/x.svg' : './assets/svg/arrow-up.svg';
-  promptBox.disabled = busy;
+
+  if (busy) {
+    // Disabling the textarea blurs it, so remember whether it was in use.
+    refocusPrompt = document.activeElement === promptBox || document.activeElement === sendBtn;
+    promptBox.disabled = true;
+  } else {
+    promptBox.disabled = false;
+    if (refocusPrompt && !isTypingElsewhere()) promptBox.focus();
+    refocusPrompt = false;
+  }
+}
+
+function isTypingElsewhere() {
+  const el = document.activeElement;
+  if (!el || el === document.body || el === promptBox) return false;
+  return el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable;
 }
 
 function serializeMessages() {
